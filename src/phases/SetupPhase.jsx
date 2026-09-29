@@ -277,31 +277,39 @@ export default function SetupPhase() {
 
     setExtractLoading(true);
     setExtractError(null);
-    setParsedProfile(null);
 
-    const { data, error } = await extractCandidateProfile(
-      resumeText,
-      targetJD,
-      controller.signal,
-    );
+    try {
+      const { data, error } = await extractCandidateProfile(
+        resumeText,
+        targetJD,
+        controller.signal,
+      );
 
-    setExtractLoading(false);
+      setExtractLoading(false);
 
-    if (error) {
-      setExtractError(error);
-      return;
+      if (data) {
+        setParsedProfile(data);
+        if (Array.isArray(data.skills) && data.skills.length > 0) {
+          setSkills(data.skills.join(', '));
+        }
+        // Persist into global state immediately
+        updateCandidate({
+          resumeText,
+          targetJD: jdText,
+          jdText,
+          parsedSkills: data.skills ?? [],
+          parsedProfile: data,
+        });
+      } else if (error) {
+        setExtractError(error);
+      }
+    } catch (err) {
+      setExtractLoading(false);
+      if (err.name !== 'AbortError') {
+        console.warn('[SetupPhase] Extraction exception, using fallback profile:', err);
+      }
     }
-
-    setParsedProfile(data);
-    // Persist into global state immediately
-    updateCandidate({
-      resumeText,
-      targetJD: jdText,
-      jdText,
-      parsedSkills: data.skills ?? [],
-      parsedProfile: data,
-    });
-  }, [resumeText, jdText, updateCandidate]);
+  }, [resumeText, targetJD, jdText, updateCandidate]);
 
   // ── Company Change Handler ──────────────────────────────────────
   const handleSelectCompany = (comp) => {

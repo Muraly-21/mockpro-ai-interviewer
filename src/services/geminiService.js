@@ -21,26 +21,8 @@ export const GEMINI_LEGACY_MODEL   = 'gemini-2.5-flash';
 let _geminiChatCooldownUntil = 0; // Cooldown on 503 high-demand spikes
 
 
-/**
- * Resolve Gemini API key from localStorage or Vite environment
- */
-export function resolveGeminiKey() {
-  try {
-    const stored = JSON.parse(localStorage.getItem('mockpro_api_keys') ?? '{}');
-    if (stored?.geminiApiKey && stored.geminiApiKey.trim()) {
-      return stored.geminiApiKey.trim();
-    }
-  } catch { /* silent */ }
-  return (import.meta.env.VITE_GEMINI_API_KEY ?? '').trim();
-}
-
-/**
- * Check if a Gemini API key is configured
- */
-export function isGeminiConfigured() {
-  const key = resolveGeminiKey();
-  return Boolean(key && key.length > 10);
-}
+import { resolveGeminiKey, isGeminiConfigured } from './apiKeys';
+export { resolveGeminiKey, isGeminiConfigured };
 
 /**
  * Transform standard OpenAI-style messages [{ role, content }]

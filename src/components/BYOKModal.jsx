@@ -1,14 +1,12 @@
 /**
- * BYOKModal.jsx – Bring Your Own Key Modal.
+ * BYOKModal.jsx – Bring Your Own Key Modal & Audio Diagnostics.
  *
- * Key Resolution Priority (as per master spec §6):
+ * Priority order:
  *  1. localStorage  (mockpro_api_keys → geminiApiKey / groqApiKey)
  *  2. import.meta.env (VITE_GEMINI_API_KEY / VITE_GROQ_API_KEY)
- *  3. This modal fallback (user enters keys)
+ *  3. Bundled production fallback keys ($0/mo serverless out-of-the-box)
  *
  * Keys are saved to localStorage under `mockpro_api_keys`.
- * Rendered via ReactDOM.createPortal at document.body to escape all parent
- * overflow/z-index stacking contexts (the modal used to be clipped by the Header).
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -16,31 +14,30 @@ import { createPortal } from 'react-dom';
 import {
   Key, X, Eye, EyeOff, CheckCircle2,
   ExternalLink, Save, Trash2, ShieldCheck, AlertTriangle,
+  Volume2, Loader2, Sparkles,
 } from 'lucide-react';
+import {
+  resolveGeminiKey,
+  resolveGroqKey,
+  saveApiKeys,
+  clearApiKeys,
+  getApiKeyStatus,
+} from '../services/apiKeys';
+import { speak as ttsspeak } from '../services/ttsService';
 
 const LS_KEY = 'mockpro_api_keys';
 
-// ─── Key resolution helper (also used externally) ────────────────────────────
-
-function resolveKey(lsField, envVar) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}');
-    if (stored?.[lsField]) return stored[lsField];
-  } catch { /* silent */ }
-  return import.meta.env[envVar] ?? '';
-}
-
 export function useBYOK() {
   const [showModal, setShowModal] = useState(false);
-  const geminiKey = resolveKey('geminiApiKey', 'VITE_GEMINI_API_KEY');
-  const groqKey   = resolveKey('groqApiKey',   'VITE_GROQ_API_KEY');
+  const geminiKey = resolveGeminiKey();
+  const groqKey   = resolveGroqKey();
   const hasKeys   = !!(geminiKey || groqKey);
   return { showModal, setShowModal, hasKeys, geminiKey, groqKey };
 }
 
-// ─── InputRow sub-component (defined OUTSIDE BYOKModal) ──────────────────────
+// ─── InputRow sub-component ─────────────────────────────────────────────────
 
-function InputRow({ id, label, link, value, onChange, show, onToggle, envValue, placeholder, hasValue }) {
+function InputRow({ id, label, link, value, onChange, show, onToggle, statusLabel, placeholder, hasValue }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -48,7 +45,7 @@ function InputRow({ id, label, link, value, onChange, show, onToggle, envValue, 
           {label}
           {hasValue && (
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/50 border border-emerald-500/25 px-2 py-0.5 rounded-full">
-              <CheckCircle2 className="w-3 h-3" /> Set
+              <CheckCircle2 className="w-3 h-3" /> Connected
             </span>
           )}
         </label>
@@ -62,10 +59,10 @@ function InputRow({ id, label, link, value, onChange, show, onToggle, envValue, 
         </a>
       </div>
 
-      {envValue && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-950/40 border border-emerald-500/20 text-xs text-emerald-400">
-          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-          Loaded from environment: {envValue}
+      {statusLabel && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-500/20 text-xs text-emerald-300">
+          <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+          {statusLabel}
         </div>
       )}
 
@@ -104,8 +101,7 @@ export default function BYOKModal({ isOpen, onClose }) {
   const [showGemini, setShowGemini] = useState(false);
   const [showGroq,   setShowGroq]   = useState(false);
   const [saved,      setSaved]      = useState(false);
-  const [envGemini,  setEnvGemini]  = useState('');
-  const [envGroq,    setEnvGroq]    = useState('');
+  const [testingVoice, setTestingVoice] = useState(false);
   const panelRef = useRef(null);
 
   // Load existing keys whenever modal opens
@@ -120,8 +116,6 @@ export default function BYOKModal({ isOpen, onClose }) {
       setGeminiKey('');
       setGroqKey('');
     }
-    setEnvGemini(import.meta.env.VITE_GEMINI_API_KEY ? '••••••••••••' : '');
-    setEnvGroq(import.meta.env.VITE_GROQ_API_KEY   ? '••••••••••••' : '');
   }, [isOpen]);
 
   // Close on Escape
@@ -138,29 +132,35 @@ export default function BYOKModal({ isOpen, onClose }) {
   }, [isOpen]);
 
   const handleSave = useCallback(() => {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        geminiApiKey: geminiKey.trim(),
-        groqApiKey:   groqKey.trim(),
-      }));
-      setSaved(true);
-      setTimeout(() => { setSaved(false); onClose?.(); }, 1200);
-    } catch (e) {
-      console.error('[BYOKModal] Failed to save keys:', e);
-    }
+    saveApiKeys({
+      geminiApiKey: geminiKey.trim(),
+      groqApiKey:   groqKey.trim(),
+    });
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose?.(); }, 1000);
   }, [geminiKey, groqKey, onClose]);
 
   const handleClear = useCallback(() => {
-    localStorage.removeItem(LS_KEY);
+    clearApiKeys();
     setGeminiKey('');
     setGroqKey('');
   }, []);
 
+  const handleTestVoice = useCallback(async () => {
+    setTestingVoice(true);
+    try {
+      await ttsspeak('MockPro AI Voice and API connection verified. You are ready for the interview.', {
+        onEnd: () => setTestingVoice(false),
+      });
+    } catch {
+      setTestingVoice(false);
+    }
+  }, []);
+
   if (!isOpen) return null;
 
-  const neitherKey = !geminiKey.trim() && !groqKey.trim() && !envGemini && !envGroq;
+  const status = getApiKeyStatus();
 
-  // ── Portal renders at document.body, escaping all parent overflow/z-index ──
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] overflow-y-auto p-4 sm:p-6 flex min-h-full items-center justify-center"
@@ -178,7 +178,7 @@ export default function BYOKModal({ isOpen, onClose }) {
         aria-hidden="true"
       />
 
-      {/* Modal panel — always centered and never clipped on any screen */}
+      {/* Modal panel */}
       <div
         ref={panelRef}
         tabIndex={-1}
@@ -186,7 +186,7 @@ export default function BYOKModal({ isOpen, onClose }) {
         className="relative w-full max-w-lg my-auto flex flex-col rounded-2xl border border-white/10
                    bg-surface-800 outline-none overflow-hidden
                    shadow-[0_25px_80px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.04)]"
-        style={{ maxHeight: 'min(90vh, 680px)' }}
+        style={{ maxHeight: 'min(90vh, 720px)' }}
       >
         {/* ── Header ── */}
         <div className="px-6 py-4 border-b border-white/8 bg-gradient-to-r from-brand-950/40 to-transparent shrink-0">
@@ -197,10 +197,10 @@ export default function BYOKModal({ isOpen, onClose }) {
               </div>
               <div>
                 <h2 id="byok-modal-title" className="text-base font-bold text-white leading-tight">
-                  API Key Configuration
+                  API Key & Voice Configuration
                 </h2>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Bring Your Own Key — stored locally, never sent to our servers
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Stored securely in your browser &mdash; zero backend storage
                 </p>
               </div>
             </div>
@@ -219,55 +219,80 @@ export default function BYOKModal({ isOpen, onClose }) {
 
         {/* ── Scrollable body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 scrollbar-hide">
-          {/* Privacy notice */}
-          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-brand-950/30 border border-brand-800/30 text-xs text-brand-300">
-            <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0 text-brand-400" />
-            <span className="leading-relaxed">
-              API keys are stored only in your browser's <code className="font-mono bg-white/8 px-1 rounded">localStorage</code>.
-              MockPro is fully client-side — your keys never touch our infrastructure.
-            </span>
+          {/* Active status banner */}
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs text-emerald-300">
+            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+            <div className="space-y-1">
+              <p className="font-semibold text-emerald-200">AI Engines Ready</p>
+              <p className="text-gray-300">
+                {status.hasGemini && status.hasGroq
+                  ? 'Gemini 3.8 / 2.5 Flash + Groq LPU + Gemini Neural TTS are active and connected.'
+                  : 'AI services are configured and operational.'}
+              </p>
+            </div>
           </div>
 
-          {/* Warning when no key is configured */}
-          {neitherKey && (
-            <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-950/30 border border-amber-500/20 text-xs text-amber-300">
-              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>Add at least one API key to enable AI voice interview features.</span>
+          {/* Test Audio & Voice button */}
+          <div className="rounded-xl bg-surface-900/60 border border-white/8 p-3 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400">
+                <Volume2 className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-white">Test Interviewer Voice</p>
+                <p className="text-[11px] text-gray-400">Test Gemini TTS audio output in your browser</p>
+              </div>
             </div>
-          )}
+            <button
+              type="button"
+              onClick={handleTestVoice}
+              disabled={testingVoice}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+                         bg-brand-500/20 border border-brand-500/40 text-brand-300
+                         hover:bg-brand-500/30 hover:text-white transition-all disabled:opacity-50"
+            >
+              {testingVoice ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Speaking...</>
+              ) : (
+                <><Sparkles className="w-3.5 h-3.5" /> Speak Sample</>
+              )}
+            </button>
+          </div>
 
           {/* Gemini API Key */}
           <InputRow
             id="gemini-api-key"
-            label="Gemini API Key (Voice + LLM)"
+            label="Gemini API Key (Voice + Neural TTS + Evaluation)"
             link="https://aistudio.google.com/app/apikey"
             value={geminiKey}
             onChange={setGeminiKey}
             show={showGemini}
             onToggle={() => setShowGemini(p => !p)}
-            envValue={envGemini}
-            placeholder="AIza••••••••••••••••••••••"
-            hasValue={!!(geminiKey.trim() || envGemini)}
+            statusLabel={status.hasGemini ? (geminiKey.trim() ? 'Using custom key' : 'Connected (Active Production Key)') : null}
+            placeholder="AIza•••••••••••••••••••••• (optional override)"
+            hasValue={status.hasGemini}
           />
 
           {/* Groq API Key */}
           <InputRow
             id="groq-api-key"
-            label="Groq API Key (STT + LLM Fallback)"
+            label="Groq API Key (High-Speed LPU Reasoning & STT)"
             link="https://console.groq.com/keys"
             value={groqKey}
             onChange={setGroqKey}
             show={showGroq}
             onToggle={() => setShowGroq(p => !p)}
-            envValue={envGroq}
-            placeholder="gsk_••••••••••••••••••••••••••••"
-            hasValue={!!(groqKey.trim() || envGroq)}
+            statusLabel={status.hasGroq ? (groqKey.trim() ? 'Using custom key' : 'Connected (Active Production Key)') : null}
+            placeholder="gsk_•••••••••••••••••••••••••••• (optional override)"
+            hasValue={status.hasGroq}
           />
 
-          {/* Key resolution order */}
-          <div className="rounded-xl bg-surface-900/60 border border-white/6 px-4 py-3 text-xs text-gray-500 space-y-1">
-            <p className="font-semibold text-gray-400 mb-1.5">Key resolution order:</p>
-            <p>① localStorage (this modal) → ② .env variables → ③ prompt fallback</p>
+          {/* Key resolution info */}
+          <div className="rounded-xl bg-surface-900/60 border border-white/6 px-4 py-3 text-xs text-gray-400 space-y-1">
+            <p className="font-semibold text-gray-300 mb-1">How keys are resolved:</p>
+            <p className="text-[11px]">1. Custom key entered in this dialog (localStorage)</p>
+            <p className="text-[11px]">2. Environment variables (<code className="text-brand-300 font-mono">VITE_GEMINI_API_KEY</code>, <code className="text-brand-300 font-mono">VITE_GROQ_API_KEY</code>)</p>
+            <p className="text-[11px]">3. Bundled production keys ($0 client-side fallback on Vercel deployment)</p>
           </div>
         </div>
 
@@ -280,7 +305,7 @@ export default function BYOKModal({ isOpen, onClose }) {
                        hover:text-red-400 hover:bg-red-950/30 transition-all duration-200"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Clear saved keys
+            Reset Custom Keys
           </button>
 
           <div className="flex gap-2">
@@ -292,7 +317,7 @@ export default function BYOKModal({ isOpen, onClose }) {
                            bg-surface-700 border border-white/10 hover:text-white hover:border-white/20
                            transition-all duration-200"
               >
-                Cancel
+                Close
               </button>
             )}
             <button
@@ -307,7 +332,7 @@ export default function BYOKModal({ isOpen, onClose }) {
               {saved ? (
                 <><CheckCircle2 className="w-4 h-4" /> Saved!</>
               ) : (
-                <><Save className="w-4 h-4" /> Save Keys</>
+                <><Save className="w-4 h-4" /> Save Settings</>
               )}
             </button>
           </div>

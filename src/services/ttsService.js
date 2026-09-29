@@ -3,15 +3,13 @@
  *
  * Engine cascade:
  *   PRIMARY:  Gemini TTS Multi-Model Cascade
- *             1. gemini-3.8-flash-lite-tts (native WAV, fast, high quota)
- *             2. gemini-3.1-flash-tts-preview (PCM L16 -> wrapped to WAV)
- *             3. gemini-2.5-flash-preview-tts (PCM L16 -> wrapped to WAV)
- *             4. gemini-3.8-flash-tts (native WAV)
+ *             1. gemini-3.8-flash-tts (native RIFF/WAV, crisp, low latency)
+ *             2. gemini-3.1-flash-tts-preview (WAV / PCM audio)
  *             → Played via HTMLAudioElement (blob URL)
  *             → Automatic user-gesture autoplay unlock listener
  *
  *   FALLBACK: Web Speech API (window.speechSynthesis)
- *             → High-quality natural English voice selection
+ *             → Natural English voice selection (en-IN / en-US / Google / Natural)
  *             → Auto-recovery from Chrome speech engine pause bug
  *
  * Features:
@@ -21,15 +19,7 @@
  *   • Zero external audio library dependencies
  */
 
-// ─── Key Resolution ───────────────────────────────────────────────────────────
-
-function resolveGeminiKey() {
-  try {
-    const stored = JSON.parse(localStorage.getItem('mockpro_api_keys') ?? '{}');
-    if (stored?.geminiApiKey?.trim()) return stored.geminiApiKey.trim();
-  } catch { /* silent */ }
-  return (import.meta.env.VITE_GEMINI_API_KEY ?? '').trim();
-}
+import { resolveGeminiKey } from './apiKeys';
 
 // ─── Active audio tracking ────────────────────────────────────────────────────
 
@@ -139,8 +129,8 @@ function pcmToWavBlob(pcmBytes, sampleRate = 24000, numChannels = 1) {
 
 // ─── Gemini TTS Engine ───────────────────────────────────────────────────────
 
-const TTS_MODEL = 'gemini-2.0-flash';
-let _ttsCooldownUntil = 0; // Cooldown timestamp when rate-limited or erroring
+const TTS_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview'];
+let _ttsCooldownUntil = 0;
 
 /**
  * Fetch speech audio from Gemini and play it via HTMLAudioElement.
@@ -150,7 +140,6 @@ async function speakViaGemini(text, onStart, onEnd, token) {
   const apiKey = resolveGeminiKey();
   if (!apiKey) return false;
 
-  // If Gemini TTS recently rate-limited (HTTP 429 / 503), bypass network delay entirely
   if (Date.now() < _ttsCooldownUntil) {
     return false;
   }
@@ -160,78 +149,82 @@ async function speakViaGemini(text, onStart, onEnd, token) {
 
   const abortCtrl = new AbortController();
   _activeAbortCtrl = abortCtrl;
-  const timeoutId = setTimeout(() => abortCtrl.abort(), 2200); // 2.2s fast-abort
+  // 6.5s realistic timeout for remote high-fidelity neural audio generation
+  const timeoutId = setTimeout(() => abortCtrl.abort(), 6500);
 
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: abortCtrl.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+  for (const model of TTS_MODELS) {
+    if (token !== _speakToken) return true;
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: abortCtrl.signal,
+          body: JSON.stringify({
+            contents: [{ parts: [{ text }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+              },
             },
-          },
-        }),
+          }),
+        }
+      );
+
+      if (token !== _speakToken) return true;
+
+      if (!res.ok) {
+        if (res.status === 429 || res.status === 503) {
+          _ttsCooldownUntil = Date.now() + 30000;
+          console.warn(`[TTS] Gemini TTS ${res.status} (rate limit). Cooling down, switching to Web Speech.`);
+          break;
+        }
+        console.warn(`[TTS] ${model} returned HTTP ${res.status}, trying next model or Web Speech.`);
+        continue;
       }
-    );
-    clearTimeout(timeoutId);
-    if (_activeAbortCtrl === abortCtrl) _activeAbortCtrl = null;
 
-    if (token !== _speakToken) return true; // cancelled during fetch
+      const data = await res.json();
+      if (token !== _speakToken) return true;
 
-    if (!res.ok) {
-      if (res.status === 429 || res.status === 503) {
-        _ttsCooldownUntil = Date.now() + 45000; // 45s cooldown on quota/demand spikes
-        console.warn(`[TTS] Gemini TTS ${res.status} (quota/demand limit). Cooling down for 45s, switching to instant Web Speech.`);
+      const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      if (!inlineData?.data) {
+        console.warn(`[TTS] ${model} returned empty audio data`);
+        continue;
+      }
+
+      // Decode base64 bytes
+      const raw = atob(inlineData.data);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+      // Check for RIFF/WAVE header
+      const isRiff = bytes.length > 4 &&
+        bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+
+      if (isRiff) {
+        audioBlob = new Blob([bytes], { type: 'audio/wav' });
       } else {
-        console.warn(`[TTS] ${TTS_MODEL} returned HTTP ${res.status}, falling back to Web Speech.`);
+        const rateMatch = (inlineData.mimeType || '').match(/rate=(\d+)/i);
+        const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+        audioBlob = pcmToWavBlob(bytes, sampleRate, 1);
       }
-      return false;
+
+      // Succeeded with this model
+      break;
+    } catch (err) {
+      if (token !== _speakToken) return true;
+      if (err.name === 'AbortError') {
+        console.info('[TTS] Gemini TTS timed out (>6.5s). Seamlessly using instant Web Speech.');
+        break;
+      }
+      console.warn(`[TTS] ${model} fetch exception:`, err.message);
     }
-
-    const data = await res.json();
-    if (token !== _speakToken) return true; // cancelled during json parse
-
-    const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-    if (!inlineData?.data) {
-      console.warn(`[TTS] ${TTS_MODEL} returned empty audio data`);
-      return false;
-    }
-
-    // Decode base64 bytes
-    const raw = atob(inlineData.data);
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-
-    // Check if it already has RIFF/WAVE header
-    const isRiff = bytes.length > 4 &&
-      bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
-
-    if (isRiff) {
-      audioBlob = new Blob([bytes], { type: 'audio/wav' });
-    } else {
-      const rateMatch = (inlineData.mimeType || '').match(/rate=(\d+)/i);
-      const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-      audioBlob = pcmToWavBlob(bytes, sampleRate, 1);
-    }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    if (_activeAbortCtrl === abortCtrl) _activeAbortCtrl = null;
-    if (token !== _speakToken) return true; // cancelled
-
-    if (err.name === 'AbortError') {
-      console.info('[TTS] Gemini TTS timed out or aborted (>2.2s). Seamlessly using instant Web Speech.');
-    } else {
-      console.warn('[TTS] Gemini TTS fetch exception:', err.message);
-    }
-    return false;
   }
+
+  clearTimeout(timeoutId);
+  if (_activeAbortCtrl === abortCtrl) _activeAbortCtrl = null;
 
   if (!audioBlob || token !== _speakToken) {
     return false;
@@ -256,7 +249,7 @@ async function speakViaGemini(text, onStart, onEnd, token) {
   };
 
   audio.onerror = (e) => {
-    console.warn('[TTS] HTMLAudio playback error:', e.type, audio.error?.code, audio.error?.message);
+    console.warn('[TTS] HTMLAudio playback error:', e.type);
     if (_currentBlobUrl === blobUrl) {
       try { URL.revokeObjectURL(blobUrl); } catch {}
       _currentBlobUrl = null;
@@ -277,7 +270,7 @@ async function speakViaGemini(text, onStart, onEnd, token) {
     }
     onStart?.();
     await audio.play();
-    console.info(`[TTS] Playing via ${TTS_MODEL}: "${text.slice(0, 60)}..."`);
+    console.info(`[TTS] Playing via Gemini TTS: "${text.slice(0, 60)}..."`);
     return true;
   } catch (playErr) {
     if (token !== _speakToken) return true;
@@ -306,18 +299,17 @@ async function speakViaGemini(text, onStart, onEnd, token) {
       window.addEventListener('keydown', unlockHandler, true);
       window.addEventListener('pointerdown', unlockHandler, true);
 
-      // Return true because the Gemini audio is ready and will play upon interaction
       return true;
     }
 
     if (playErr.name === 'AbortError' || playErr.message?.includes('interrupted')) {
-      console.info('[TTS] HTMLAudio.play was interrupted/superseded.');
+      console.info('[TTS] HTMLAudio.play was interrupted.');
       if (_currentBlobUrl === blobUrl) {
         try { URL.revokeObjectURL(blobUrl); } catch {}
         _currentBlobUrl = null;
       }
       if (_currentAudio === audio) _currentAudio = null;
-      return true; // Intentionally stopped; do not trigger Web Speech fallback
+      return true;
     }
 
     console.warn('[TTS] HTMLAudio.play() error:', playErr.message);
@@ -344,16 +336,11 @@ function speakViaWebSpeech(text, onStart, onEnd, token) {
     return;
   }
 
-  try {
-    window.speechSynthesis.onvoiceschanged = null;
-    window.speechSynthesis.cancel();
-  } catch {}
-
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate   = 1.0;
   utter.pitch  = 1.0;
   utter.volume = 1.0;
-  utter.lang   = 'en-IN';
+  utter.lang   = 'en-US';
 
   let hasStarted = false;
   utter.onstart = () => {
@@ -396,7 +383,6 @@ function speakViaWebSpeech(text, onStart, onEnd, token) {
 
     const voices = window.speechSynthesis.getVoices();
 
-    // Prioritize authentic Indian English (en-IN) voices (Google English India, Microsoft Heera/Neerja/Ravi/Prabhat)
     const indianVoice = voices.find(v => {
       const lang = (v.lang || '').replace('_', '-').toLowerCase();
       const name = (v.name || '').toLowerCase();
@@ -420,25 +406,15 @@ function speakViaWebSpeech(text, onStart, onEnd, token) {
 
     if (pref) {
       utter.voice = pref;
-      utter.lang = pref.lang || 'en-IN';
+      utter.lang = pref.lang || 'en-US';
       console.info(`[TTS] Speaking with voice: "${pref.name}" (${pref.lang})`);
     }
 
     if (token !== _speakToken) return;
 
     try {
-      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-        window.speechSynthesis.cancel();
-        setTimeout(() => {
-          if (token === _speakToken) {
-            window.speechSynthesis.speak(utter);
-            window.speechSynthesis.resume();
-          }
-        }, 50);
-      } else {
-        window.speechSynthesis.speak(utter);
-        window.speechSynthesis.resume();
-      }
+      window.speechSynthesis.speak(utter);
+      window.speechSynthesis.resume();
     } catch (e) {
       console.warn('[TTS] speechSynthesis.speak error:', e);
       return;
@@ -472,7 +448,7 @@ function speakViaWebSpeech(text, onStart, onEnd, token) {
       if (token === _speakToken && !window.speechSynthesis.speaking && !hasStarted) {
         doSpeak();
       }
-    }, 400);
+    }, 300);
   }
 }
 

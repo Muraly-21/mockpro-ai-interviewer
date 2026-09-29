@@ -25,21 +25,16 @@
  * $0/mo – Client-side WebSocket implementation.
  */
 
-export const GEMINI_LIVE_MODEL = 'models/gemini-2.5-flash';
+import { resolveGeminiKey } from './apiKeys';
+
+export const GEMINI_LIVE_MODEL = 'models/gemini-2.5-flash-native-audio-latest';
+export const GEMINI_LIVE_FALLBACK_MODEL = 'models/gemini-3.8-live';
 const SAMPLE_RATE_IN           = 16000;  // 16kHz PCM input required by Gemini Live
 const SAMPLE_RATE_OUT          = 24000;  // 24kHz PCM output from Gemini Live
 const CHUNK_SIZE               = 4096;   // samples per ScriptProcessor processing block
 const RMS_NOISE_GATE           = 0.004;  // RMS threshold — lowered so conversational speech is captured smoothly without shouting
 
-// ─── Key Resolution ──────────────────────────────────────────────────────────
-
-export function resolveGeminiKey() {
-  try {
-    const stored = JSON.parse(localStorage.getItem('mockpro_api_keys') ?? '{}');
-    if (stored?.geminiApiKey) return stored.geminiApiKey;
-  } catch { /* silent */ }
-  return import.meta.env.VITE_GEMINI_API_KEY ?? '';
-}
+export { resolveGeminiKey };
 
 // ─── Client-side 16kHz Downsampler ──────────────────────────────────────────
 

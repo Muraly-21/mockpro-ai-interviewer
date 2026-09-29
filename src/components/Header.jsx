@@ -17,11 +17,20 @@ import { cancel as ttsCancel } from '../services/ttsService';
 
 const PHASE_ICONS = ['⚙️', '🧮', '💻', '🎙️', '🏆'];
 
+import { getApiKeyStatus } from '../services/apiKeys';
+
 export default function Header() {
   const { currentPhase, setPhase, resetInterview } = useInterview();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [devSeedFlash, setDevSeedFlash]         = useState(false);
   const [showBYOK,    setShowBYOK]              = useState(false);
+  const [keyStatus,   setKeyStatus]             = useState(() => getApiKeyStatus());
+
+  useEffect(() => {
+    const onKeyChange = () => setKeyStatus(getApiKeyStatus());
+    window.addEventListener('mockpro_keys_changed', onKeyChange);
+    return () => window.removeEventListener('mockpro_keys_changed', onKeyChange);
+  }, []);
 
   // Listen for Ctrl+Shift+D to flash dev indicator
   useEffect(() => {
@@ -141,14 +150,20 @@ export default function Header() {
             <button
               id="byok-settings-btn"
               onClick={() => setShowBYOK(true)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold
-                         bg-surface-700 border border-white/10 text-gray-400
-                         hover:text-white hover:border-white/20 transition-all duration-200
-                         focus:outline-none focus:ring-2 focus:ring-brand-500/50"
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold
+                         border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-brand-500/50
+                         ${keyStatus.hasGemini || keyStatus.hasGroq
+                           ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300 hover:border-emerald-500/60 hover:text-white'
+                           : 'bg-surface-700 border-white/10 text-gray-400 hover:text-white hover:border-white/20'}`}
               title="Configure API Keys (BYOK)"
             >
               <Key className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">API Keys</span>
+              <span className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${keyStatus.hasGemini && keyStatus.hasGroq ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                <span className="hidden sm:inline">
+                  {keyStatus.hasGemini && keyStatus.hasGroq ? 'AI Connected' : 'API Keys'}
+                </span>
+              </span>
             </button>
 
             {/* Reset button */}

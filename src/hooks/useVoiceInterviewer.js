@@ -98,6 +98,7 @@ export default function useVoiceInterviewer({
   const accumulatedSpeechRef = useRef('');
   const interimTextRef      = useRef('');
   const startSpeechRecRef   = useRef(null);
+  const aiSpeakStartRef     = useRef(0);
 
   // Build system history once (ref so it survives re-renders without adding deps)
   const groqHistory = useRef([
@@ -186,12 +187,13 @@ export default function useVoiceInterviewer({
       const level = Math.min(1, rms * 4.5);
       setMicLevel(level);
 
-      // Barge-in: only cancel AI TTS when candidate's deliberate voice exceeds conversational threshold
-      // Muted when AI is asking a question to prevent laptop speaker feedback
-      if (!isDeliveringQuestionRef.current && level > 0.12) {
+      // Barge-in: only cancel AI TTS when candidate's deliberate voice exceeds high threshold
+      // and only after AI has spoken for at least 2.5 seconds to prevent initial speaker echo
+      const isLongSpeaking = speakingStateRef.current === SPEAKING_STATE.AI_SPEAKING && (Date.now() - aiSpeakStartRef.current > 2500);
+      if (!isDeliveringQuestionRef.current && isLongSpeaking && level > 0.35) {
         voiceLevelTicksRef.current += 1;
-        if (voiceLevelTicksRef.current >= 3 && speakingStateRef.current === SPEAKING_STATE.AI_SPEAKING) {
-          console.info('[useVoiceInterviewer] Candidate voice detected while AI speaking - interrupting AI.');
+        if (voiceLevelTicksRef.current >= 5) {
+          console.info('[useVoiceInterviewer] Deliberate candidate barge-in detected - interrupting AI.');
           ttsCancel();
           _setSpeakingState(SPEAKING_STATE.CANDIDATE_SPEAKING);
         }
@@ -209,12 +211,30 @@ export default function useVoiceInterviewer({
    */
   const speak = useCallback(async (text, onEnd) => {
     if (!isTTSOn || !text?.trim()) { onEnd?.(); return; }
+
+    const wasMicRunning = isMicOnRef.current;
+    if (speechRecRef.current) {
+      _stopSpeechRec();
+    }
+    aiSpeakStartRef.current = Date.now();
     _setSpeakingState(SPEAKING_STATE.AI_SPEAKING);
+
     await ttsspeak(text, {
-      onStart: () => _setSpeakingState(SPEAKING_STATE.AI_SPEAKING),
-      onEnd:   () => {
+      onStart: () => {
+        aiSpeakStartRef.current = Date.now();
+        _setSpeakingState(SPEAKING_STATE.AI_SPEAKING);
+      },
+      onEnd: () => {
         if (speakingStateRef.current === SPEAKING_STATE.AI_SPEAKING) {
           _setSpeakingState(SPEAKING_STATE.IDLE);
+        }
+        // Smoothly resume recognition after AI is done speaking
+        if (isMounted.current && wasMicRunning) {
+          setTimeout(() => {
+            if (isMounted.current && isMicOnRef.current && speakingStateRef.current !== SPEAKING_STATE.AI_SPEAKING) {
+              startSpeechRecRef.current?.();
+            }
+          }, 200);
         }
         onEnd?.();
       },
@@ -372,8 +392,13 @@ export default function useVoiceInterviewer({
       rec.onspeechstart = () => {
         if (isMounted.current) {
           if (speakingStateRef.current === SPEAKING_STATE.AI_SPEAKING) {
-            console.info('[useVoiceInterviewer] Candidate started speaking, interrupting AI TTS.');
-            ttsCancel();
+            // Only allow barge-in after 2.5s of speech to prevent immediate cut-off from speaker echo
+            if (Date.now() - aiSpeakStartRef.current > 2500) {
+              console.info('[useVoiceInterviewer] Candidate started speaking, interrupting AI TTS.');
+              ttsCancel();
+              _setSpeakingState(SPEAKING_STATE.CANDIDATE_SPEAKING);
+            }
+            return;
           }
           _setSpeakingState(SPEAKING_STATE.CANDIDATE_SPEAKING);
         }
