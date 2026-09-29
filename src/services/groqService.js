@@ -84,11 +84,84 @@ async function groqFetch(endpoint, body, signal) {
   }
 }
 
+/**
+ * Direct call to Google Gemini 2.5 Flash as a transparent dual-engine fallback
+ * when Groq API key is not configured or fails.
+ */
+async function callGeminiDirect(messages, opts = {}) {
+  try {
+    let geminiKey = '';
+    try {
+      const stored = JSON.parse(localStorage.getItem('mockpro_api_keys') ?? '{}');
+      geminiKey = stored?.geminiApiKey?.trim();
+    } catch {}
+    if (!geminiKey) {
+      geminiKey = (import.meta.env.VITE_GEMINI_API_KEY ?? '').trim();
+    }
+    if (!geminiKey) return null;
+
+    let systemInstruction = null;
+    const contents = [];
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        systemInstruction = { parts: [{ text: msg.content }] };
+      } else {
+        contents.push({
+          role: msg.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: msg.content }]
+        });
+      }
+    }
+    if (contents.length === 0) {
+      contents.push({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+
+    const body = {
+      contents,
+      generationConfig: {
+        temperature: opts.temperature ?? 0.3,
+        maxOutputTokens: opts.maxTokens ?? 2048,
+      }
+    };
+    if (systemInstruction) body.systemInstruction = systemInstruction;
+    if (opts.response_format?.type === 'json_object' || opts.responseFormat?.type === 'json_object') {
+      body.generationConfig.responseMimeType = 'application/json';
+    }
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+      return {
+        data: {
+          choices: [{ message: { role: 'assistant', content: text } }],
+        },
+        error: null,
+        provider: 'gemini',
+      };
+    }
+    const errText = await res.text();
+    console.warn('[groqService -> GeminiDirect] Gemini failed:', res.status, errText);
+    return null;
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    console.warn('[groqService -> GeminiDirect] Exception:', err.message);
+    return null;
+  }
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /**
  * chatCompletion – Send messages to the Groq chat completions endpoint
- * with automatic model fallback cascade.
+ * with automatic model fallback cascade and transparent Gemini fallback.
  */
 export async function chatCompletion(messages, opts = {}) {
   const {
@@ -98,6 +171,20 @@ export async function chatCompletion(messages, opts = {}) {
     responseFormat = opts.response_format,
     signal,
   } = opts;
+
+  const apiKey = getApiKey();
+
+  // If no Groq API key is configured, seamlessly execute via configured Gemini key
+  if (!apiKey) {
+    const geminiRes = await callGeminiDirect(messages, opts);
+    if (geminiRes && !geminiRes.error) {
+      return geminiRes;
+    }
+    return {
+      data: null,
+      error: 'No valid API key found. Please provide your Gemini or Groq API key in the API Keys menu.',
+    };
+  }
 
   const buildBody = (modelName) => {
     const body = {
@@ -147,6 +234,11 @@ export async function chatCompletion(messages, opts = {}) {
           `[groqService] Model "${currentModel}" failed. Silently failing over to "${modelsToTry[i + 1]}"...`
         );
       } else {
+        // Last Groq model in cascade failed — attempt Gemini before returning error
+        const geminiRes = await callGeminiDirect(messages, opts);
+        if (geminiRes && !geminiRes.error) {
+          return geminiRes;
+        }
         return result;
       }
     } catch (err) {
@@ -159,9 +251,18 @@ export async function chatCompletion(messages, opts = {}) {
           `[groqService] Model "${currentModel}" threw exception. Falling back to "${modelsToTry[i + 1]}"...`
         );
       } else {
+        const geminiRes = await callGeminiDirect(messages, opts);
+        if (geminiRes && !geminiRes.error) {
+          return geminiRes;
+        }
         return { data: null, error: err.message ?? 'All models failed' };
       }
     }
+  }
+
+  const geminiRes = await callGeminiDirect(messages, opts);
+  if (geminiRes && !geminiRes.error) {
+    return geminiRes;
   }
 
   return { data: null, error: 'All models in the cascade failed.' };
