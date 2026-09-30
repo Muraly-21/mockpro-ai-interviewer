@@ -152,16 +152,26 @@ export default function Header() {
               onClick={() => setShowBYOK(true)}
               className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold
                          border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-brand-500/50
-                         ${keyStatus.hasGemini || keyStatus.hasGroq
+                         ${keyStatus.isCustomGemini && keyStatus.isCustomGroq
                            ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300 hover:border-emerald-500/60 hover:text-white'
+                           : keyStatus.hasGemini || keyStatus.hasGroq
+                           ? 'bg-amber-950/40 border-amber-500/40 text-amber-300 hover:border-amber-500/70 hover:text-white hover:bg-amber-950/60'
                            : 'bg-surface-700 border-white/10 text-gray-400 hover:text-white hover:border-white/20'}`}
-              title="Configure API Keys (BYOK)"
+              title={keyStatus.isCustomGemini && keyStatus.isCustomGroq
+                ? 'Custom API keys active — click to manage'
+                : 'Using shared key — click to add your own for uninterrupted access'}
             >
               <Key className="w-3.5 h-3.5" />
               <span className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${keyStatus.hasGemini && keyStatus.hasGroq ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                <span className={`w-2 h-2 rounded-full ${
+                  keyStatus.isCustomGemini && keyStatus.isCustomGroq
+                    ? 'bg-emerald-400 animate-pulse'
+                    : 'bg-amber-400 animate-pulse'
+                }`} />
                 <span className="hidden sm:inline">
-                  {keyStatus.hasGemini && keyStatus.hasGroq ? 'AI Connected' : 'API Keys'}
+                  {keyStatus.isCustomGemini && keyStatus.isCustomGroq
+                    ? 'AI Connected'
+                    : 'Add Your Key'}
                 </span>
               </span>
             </button>

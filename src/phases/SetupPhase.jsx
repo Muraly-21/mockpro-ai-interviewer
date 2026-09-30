@@ -19,11 +19,13 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Upload, FileText, Target, Sparkles, ArrowRight,
   CheckCircle2, Loader2, AlertCircle, X, Brain,
-  FileBadge, ChevronDown, ChevronUp, Paperclip,
+  FileBadge, ChevronDown, ChevronUp, Paperclip, Key, Zap, Lock, Infinity as InfinityIcon,
 } from 'lucide-react';
 import { useInterview, PHASES } from '../context/InterviewContext';
 import { extractTextFromPDF, isValidPDFFile } from '../utils/pdfParser';
 import { extractCandidateProfile } from '../services/groqService';
+import { getApiKeyStatus } from '../services/apiKeys';
+import BYOKModal from '../components/BYOKModal';
 
 // ─── Domain chip colour map ─────────────────────────────────────────────────
 const DOMAIN_COLORS = [
@@ -148,6 +150,16 @@ export default function SetupPhase() {
 
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
+
+  // ── BYOK modal state (so users can open keys modal from setup page) ──
+  const [showBYOK, setShowBYOK] = useState(false);
+  const [keyStatus, setKeyStatus] = useState(() => getApiKeyStatus());
+  useEffect(() => {
+    const onKeyChange = () => setKeyStatus(getApiKeyStatus());
+    window.addEventListener('mockpro_keys_changed', onKeyChange);
+    return () => window.removeEventListener('mockpro_keys_changed', onKeyChange);
+  }, []);
+  const usingSharedKey = (keyStatus.hasGemini && !keyStatus.isCustomGemini) || (keyStatus.hasGroq && !keyStatus.isCustomGroq);
 
   // ── Sync Controlled Inputs with InterviewContext candidateData (e.g. Ctrl+Shift+D or external hydration) ──
   useEffect(() => {
@@ -357,6 +369,8 @@ export default function SetupPhase() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 animate-slide-up">
+      {/* BYOK modal portal */}
+      <BYOKModal isOpen={showBYOK} onClose={() => setShowBYOK(false)} />
 
       {/* ── Hero ── */}
       <div className="text-center mb-8">
@@ -372,6 +386,56 @@ export default function SetupPhase() {
           Select your target company, upload your resume or paste text, and let AI tailor the Socratic interview to MAANG benchmarks.
         </p>
       </div>
+
+      {/* ── BYOK Awareness Banner — shown when using shared/bundled keys ── */}
+      {usingSharedKey && (
+        <div
+          id="setup-byok-banner"
+          className="mb-8 rounded-2xl border border-amber-500/30 bg-gradient-to-r from-amber-950/40 to-surface-800/60 p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 shadow-[0_0_30px_rgba(245,158,11,0.08)]"
+        >
+          {/* Icon */}
+          <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+            <Key className="w-5 h-5 text-amber-400" />
+          </div>
+
+          {/* Text */}
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-amber-200 leading-tight">
+              Bring your own API key for the best experience
+            </p>
+            <p className="text-xs text-amber-300/70 mt-1 leading-relaxed">
+              You're currently using a shared key — it may hit rate limits during peak hours.
+              Add your own <strong className="text-amber-200">free</strong> Gemini &amp; Groq keys for uninterrupted, private sessions.
+            </p>
+            {/* Benefit pills */}
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {[
+                { icon: InfinityIcon, label: 'No rate limits' },
+                { icon: Zap,         label: 'Faster responses' },
+                { icon: Lock,        label: 'Private sessions' },
+              ].map(({ icon: Icon, label }) => (
+                <span key={label} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-[10px] font-semibold text-amber-300">
+                  <Icon className="w-2.5 h-2.5" />{label}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* CTA */}
+          <button
+            id="setup-add-key-btn"
+            type="button"
+            onClick={() => setShowBYOK(true)}
+            className="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold
+                       bg-amber-500/20 border border-amber-500/50 text-amber-200
+                       hover:bg-amber-500/30 hover:text-white hover:border-amber-400/70
+                       transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+          >
+            <Key className="w-4 h-4" />
+            Add Your Key
+          </button>
+        </div>
+      )}
 
       {/* ── Target Company Selection ── */}
       <div className="mb-8 p-5 rounded-2xl bg-surface-800/90 border border-white/8 shadow-glass">
@@ -741,11 +805,21 @@ export default function SetupPhase() {
           {/* ── Tip ── */}
           <div className="p-4 rounded-xl bg-brand-950/40 border border-brand-800/30 flex items-start gap-3">
             <span className="text-lg mt-0.5">💡</span>
-            <div>
+            <div className="flex-1 min-w-0">
               <p className="text-sm text-gray-300 font-medium">Pro Tips</p>
               <ul className="text-xs text-gray-500 mt-1 space-y-1 list-disc list-inside">
                 <li>Upload a PDF to extract text automatically (client-side, no upload)</li>
-                <li>Click "Analyse with AI" to let the model map your skills to the JD</li>
+                <li>Click &quot;Analyse with AI&quot; to let the model map your skills to the JD</li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setShowBYOK(true)}
+                    className="text-brand-400 hover:text-brand-300 underline underline-offset-2 transition-colors"
+                  >
+                    Add your own free API key
+                  </button>
+                  {' '}for uninterrupted, rate-limit-free sessions
+                </li>
                 <li>
                   Press{' '}
                   <kbd className="px-1.5 py-0.5 rounded bg-surface-700 text-gray-300 font-mono text-[10px] border border-white/10">

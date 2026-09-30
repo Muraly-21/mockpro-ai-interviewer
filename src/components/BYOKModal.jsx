@@ -13,8 +13,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Key, X, Eye, EyeOff, CheckCircle2,
-  ExternalLink, Save, Trash2, ShieldCheck, AlertTriangle,
-  Volume2, Loader2, Sparkles,
+  ExternalLink, Save, Trash2,
+  Volume2, Loader2, Sparkles, Zap, Lock, Infinity,
+  AlertCircle, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   resolveGeminiKey,
@@ -22,6 +23,8 @@ import {
   saveApiKeys,
   clearApiKeys,
   getApiKeyStatus,
+  DEFAULT_GEMINI_KEY,
+  DEFAULT_GROQ_KEY,
 } from '../services/apiKeys';
 import { speak as ttsspeak } from '../services/ttsService';
 
@@ -93,6 +96,50 @@ function InputRow({ id, label, link, value, onChange, show, onToggle, statusLabe
   );
 }
 
+// ─── Key Plan Comparison sub-component ───────────────────────────────────────
+
+function KeyPlanBanner({ isCustomGemini, isCustomGroq }) {
+  const isFullyCustom = isCustomGemini && isCustomGroq;
+  const isPartialCustom = isCustomGemini || isCustomGroq;
+
+  return (
+    <div className="rounded-xl overflow-hidden border border-white/8">
+      {/* Header row */}
+      <div className="grid grid-cols-2 text-center text-[10px] font-bold uppercase tracking-widest">
+        <div className={`px-3 py-2 flex items-center justify-center gap-1.5 ${
+          !isFullyCustom ? 'bg-amber-950/60 text-amber-300 border-b border-r border-amber-600/30' : 'bg-surface-900/80 text-gray-600 border-b border-r border-white/5'
+        }`}>
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+          Shared Key (Current)
+        </div>
+        <div className={`px-3 py-2 flex items-center justify-center gap-1.5 ${
+          isFullyCustom ? 'bg-emerald-950/60 text-emerald-300 border-b border-emerald-600/30' : 'bg-surface-900/80 text-gray-500 border-b border-white/5'
+        }`}>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          Your Own Key
+        </div>
+      </div>
+      {/* Feature rows */}
+      {[
+        ['Shared rate limits', 'Dedicated rate limits'],
+        ['May hit quotas during peak hours', 'Always available — your quota only'],
+        ['No setup needed', 'Free tier: 1 500 req/day (Gemini)'],
+        ['Limited concurrent sessions', 'Unlimited personal sessions'],
+        ['Data via shared key', 'Full privacy — key never leaves browser'],
+      ].map(([shared, own], i) => (
+        <div key={i} className="grid grid-cols-2 text-[11px]">
+          <div className="px-3 py-2 flex items-start gap-1.5 border-r border-white/5 text-amber-200/70">
+            <span className="text-amber-500/70 mt-0.5 shrink-0">·</span>{shared}
+          </div>
+          <div className="px-3 py-2 flex items-start gap-1.5 text-emerald-200/80">
+            <CheckCircle2 className="w-3 h-3 text-emerald-400 mt-0.5 shrink-0" />{own}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
 export default function BYOKModal({ isOpen, onClose }) {
@@ -102,6 +149,7 @@ export default function BYOKModal({ isOpen, onClose }) {
   const [showGroq,   setShowGroq]   = useState(false);
   const [saved,      setSaved]      = useState(false);
   const [testingVoice, setTestingVoice] = useState(false);
+  const [showComparison, setShowComparison] = useState(false);
   const panelRef = useRef(null);
 
   // Load existing keys whenever modal opens
@@ -160,6 +208,11 @@ export default function BYOKModal({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const status = getApiKeyStatus();
+  // Detect if currently using shared (bundled) keys vs custom user keys
+  const usingSharedGemini = status.hasGemini && !status.isCustomGemini;
+  const usingSharedGroq   = status.hasGroq   && !status.isCustomGroq;
+  const usingAnyShared    = usingSharedGemini || usingSharedGroq;
+  const usingBothCustom   = status.isCustomGemini && status.isCustomGroq;
 
   return createPortal(
     <div
@@ -186,7 +239,7 @@ export default function BYOKModal({ isOpen, onClose }) {
         className="relative w-full max-w-lg my-auto flex flex-col rounded-2xl border border-white/10
                    bg-surface-800 outline-none overflow-hidden
                    shadow-[0_25px_80px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.04)]"
-        style={{ maxHeight: 'min(90vh, 720px)' }}
+        style={{ maxHeight: 'min(92vh, 780px)' }}
       >
         {/* ── Header ── */}
         <div className="px-6 py-4 border-b border-white/8 bg-gradient-to-r from-brand-950/40 to-transparent shrink-0">
@@ -197,10 +250,10 @@ export default function BYOKModal({ isOpen, onClose }) {
               </div>
               <div>
                 <h2 id="byok-modal-title" className="text-base font-bold text-white leading-tight">
-                  API Key & Voice Configuration
+                  API Key Configuration
                 </h2>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  Stored securely in your browser &mdash; zero backend storage
+                  Stored securely in your browser &mdash; never sent to any server
                 </p>
               </div>
             </div>
@@ -219,18 +272,101 @@ export default function BYOKModal({ isOpen, onClose }) {
 
         {/* ── Scrollable body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 scrollbar-hide">
-          {/* Active status banner */}
-          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs text-emerald-300">
-            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
-            <div className="space-y-1">
-              <p className="font-semibold text-emerald-200">AI Engines Ready</p>
-              <p className="text-gray-300">
-                {status.hasGemini && status.hasGroq
-                  ? 'Gemini 3.8 / 2.5 Flash + Groq LPU + Gemini Neural TTS are active and connected.'
-                  : 'AI services are configured and operational.'}
-              </p>
+
+          {/* ── BYOK Awareness Banner ── */}
+          {usingAnyShared && !usingBothCustom && (
+            <div
+              id="byok-awareness-banner"
+              className="rounded-xl border border-amber-500/40 bg-amber-950/30 overflow-hidden"
+            >
+              {/* Banner header */}
+              <div className="flex items-start gap-3 px-4 pt-4 pb-3">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0 mt-0.5">
+                  <AlertCircle className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-amber-200 leading-tight">You're using a shared API key</p>
+                  <p className="text-xs text-amber-300/80 mt-0.5 leading-relaxed">
+                    MockPro works out-of-the-box with a bundled key — but shared keys have rate limits.
+                    <strong className="text-amber-200"> Add your own free key for an uninterrupted experience.</strong>
+                  </p>
+                </div>
+              </div>
+
+              {/* Benefit pills */}
+              <div className="px-4 pb-3 flex flex-wrap gap-2">
+                {[
+                  { icon: Infinity, label: 'No rate limits', color: 'text-emerald-300 bg-emerald-950/50 border-emerald-600/30' },
+                  { icon: Zap,      label: 'Fastest responses', color: 'text-brand-300 bg-brand-950/50 border-brand-600/30' },
+                  { icon: Lock,     label: 'Full privacy', color: 'text-sky-300 bg-sky-950/50 border-sky-600/30' },
+                ].map(({ icon: Icon, label, color }) => (
+                  <span key={label} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${color}`}>
+                    <Icon className="w-3 h-3" />{label}
+                  </span>
+                ))}
+              </div>
+
+              {/* Steps */}
+              <div className="border-t border-amber-600/20 px-4 py-3 bg-amber-950/20">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500/70 mb-2">Get your free key in 60 seconds</p>
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-[11px] text-amber-200/80">
+                    <span className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-center text-[9px] font-bold shrink-0">1</span>
+                    Click <strong className="text-amber-200">&quot;Get key&quot;</strong> next to Gemini or Groq below
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] text-amber-200/80">
+                    <span className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-center text-[9px] font-bold shrink-0">2</span>
+                    Sign in (Google account for Gemini, email for Groq)
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] text-amber-200/80">
+                    <span className="w-4 h-4 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-center text-[9px] font-bold shrink-0">3</span>
+                    Copy your key, paste it in the fields below & hit <strong className="text-amber-200">Save</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Toggle comparison */}
+              <button
+                id="byok-compare-toggle"
+                type="button"
+                onClick={() => setShowComparison(v => !v)}
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 text-[11px] text-amber-400/70 hover:text-amber-300 transition-colors border-t border-amber-600/20"
+              >
+                {showComparison ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                {showComparison ? 'Hide' : 'See'} shared vs. own key comparison
+              </button>
+
+              {showComparison && (
+                <div className="px-4 pb-4 animate-fade-in">
+                  <KeyPlanBanner isCustomGemini={status.isCustomGemini} isCustomGroq={status.isCustomGroq} />
+                </div>
+              )}
             </div>
-          </div>
+          )}
+
+          {/* Active status banner — shown when using custom keys */}
+          {usingBothCustom && (
+            <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs text-emerald-300">
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+              <div className="space-y-1">
+                <p className="font-semibold text-emerald-200">Using your own API keys ✓</p>
+                <p className="text-gray-300">
+                  Gemini + Groq are connected with your personal keys. You get dedicated rate limits and full privacy.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Partial custom key status */}
+          {!usingAnyShared && !usingBothCustom && (status.isCustomGemini || status.isCustomGroq) && (
+            <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-brand-950/30 border border-brand-500/30 text-xs text-brand-300">
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-brand-400" />
+              <div>
+                <p className="font-semibold text-brand-200">Partial custom key active</p>
+                <p className="text-gray-400 mt-0.5">Consider adding both keys for the best experience.</p>
+              </div>
+            </div>
+          )}
 
           {/* Test Audio & Voice button */}
           <div className="rounded-xl bg-surface-900/60 border border-white/8 p-3 flex items-center justify-between">
@@ -259,6 +395,13 @@ export default function BYOKModal({ isOpen, onClose }) {
             </button>
           </div>
 
+          {/* ── Divider with label ── */}
+          <div className="flex items-center gap-3 text-gray-700 text-[10px] uppercase tracking-widest">
+            <div className="flex-1 h-px bg-white/6" />
+            Your API Keys
+            <div className="flex-1 h-px bg-white/6" />
+          </div>
+
           {/* Gemini API Key */}
           <InputRow
             id="gemini-api-key"
@@ -268,8 +411,14 @@ export default function BYOKModal({ isOpen, onClose }) {
             onChange={setGeminiKey}
             show={showGemini}
             onToggle={() => setShowGemini(p => !p)}
-            statusLabel={status.hasGemini ? (geminiKey.trim() ? 'Using custom key' : 'Connected (Active Production Key)') : null}
-            placeholder="AIza•••••••••••••••••••••• (optional override)"
+            statusLabel={
+              status.isCustomGemini
+                ? 'Using your custom key'
+                : status.hasGemini
+                ? 'Using shared key — add your own above for best experience'
+                : null
+            }
+            placeholder="AIza•••••••••••••••••••••• (paste your key here)"
             hasValue={status.hasGemini}
           />
 
@@ -282,17 +431,23 @@ export default function BYOKModal({ isOpen, onClose }) {
             onChange={setGroqKey}
             show={showGroq}
             onToggle={() => setShowGroq(p => !p)}
-            statusLabel={status.hasGroq ? (groqKey.trim() ? 'Using custom key' : 'Connected (Active Production Key)') : null}
-            placeholder="gsk_•••••••••••••••••••••••••••• (optional override)"
+            statusLabel={
+              status.isCustomGroq
+                ? 'Using your custom key'
+                : status.hasGroq
+                ? 'Using shared key — add your own above for best experience'
+                : null
+            }
+            placeholder="gsk_•••••••••••••••••••••••••••• (paste your key here)"
             hasValue={status.hasGroq}
           />
 
           {/* Key resolution info */}
           <div className="rounded-xl bg-surface-900/60 border border-white/6 px-4 py-3 text-xs text-gray-400 space-y-1">
             <p className="font-semibold text-gray-300 mb-1">How keys are resolved:</p>
-            <p className="text-[11px]">1. Custom key entered in this dialog (localStorage)</p>
+            <p className="text-[11px]">1. Custom key entered here (saved in your browser's localStorage)</p>
             <p className="text-[11px]">2. Environment variables (<code className="text-brand-300 font-mono">VITE_GEMINI_API_KEY</code>, <code className="text-brand-300 font-mono">VITE_GROQ_API_KEY</code>)</p>
-            <p className="text-[11px]">3. Bundled production keys ($0 client-side fallback on Vercel deployment)</p>
+            <p className="text-[11px]">3. Bundled shared key (default, subject to shared rate limits)</p>
           </div>
         </div>
 
