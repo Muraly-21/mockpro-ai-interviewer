@@ -49,8 +49,9 @@ const VOICE_SYSTEM_INSTRUCTION = `You are a Senior Staff Software Engineer condu
 Rules:
 1. Speak ONLY in plain sentences. No markdown, bullets, asterisks, code blocks, or lists.
 2. Keep every response to 15–25 words maximum. Be punchy and direct.
-3. Be encouraging but rigorous. Push the candidate to think deeper.
-4. Ask one focused follow-up question at a time.`;
+3. Be encouraging but rigorous.
+4. CRITICAL - Follow-up limit: You may ask AT MOST ONE follow-up question per main interview question. After that single follow-up has been answered, you MUST respond with a brief acknowledgment (e.g. "Great, thanks for that." or "Got it, appreciate the detail.") and then STOP asking questions for this topic. Do NOT ask a second or third follow-up — it creates an infinite loop. The human interviewer will move to the next question manually.
+5. If you have already asked a follow-up and the candidate has responded, NEVER ask another follow-up on the same topic. Simply acknowledge and go silent.`;
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,9 @@ export default function useVoiceInterviewer({
   const accumulatedSpeechRef = useRef('');
   const interimTextRef      = useRef('');
   const startSpeechRecRef   = useRef(null);
+  // Track how many follow-ups the AI has asked per main question
+  // Reset to 0 each time askQuestion() is called for a new main question
+  const followUpCountRef    = useRef(0);
   const aiSpeakStartRef     = useRef(0);
 
   // Build system history once (ref so it survives re-renders without adding deps)
@@ -247,8 +251,35 @@ export default function useVoiceInterviewer({
     if (!candidateText?.trim() || !isMounted.current) return;
 
     _addTranscriptEntry({ speaker: 'Candidate', text: candidateText });
-    _setSpeakingState(SPEAKING_STATE.PROCESSING);
 
+    // If the AI has already asked its one allowed follow-up for this question,
+    // just acknowledge the candidate's answer and stop — no more follow-ups.
+    if (followUpCountRef.current >= 1) {
+      const closingAcks = [
+        "Got it, thank you for elaborating.",
+        "Appreciate the detail, noted.",
+        "Thanks, that's helpful context.",
+        "Good insight, thanks for sharing.",
+        "Understood, thank you.",
+      ];
+      const ack = closingAcks[Math.floor(Math.random() * closingAcks.length)];
+      groqHistory.current.push({ role: 'user', content: candidateText });
+      groqHistory.current.push({ role: 'assistant', content: ack });
+      _addTranscriptEntry({ speaker: 'AI', text: ack });
+      isDeliveringQuestionRef.current = true;
+      _stopSpeechRec();
+      _setSpeakingState(SPEAKING_STATE.PROCESSING);
+      await speak(ack, () => {
+        isDeliveringQuestionRef.current = false;
+        _setSpeakingState(SPEAKING_STATE.IDLE);
+        if (isMounted.current && isMicOnRef.current) {
+          startSpeechRecRef.current?.();
+        }
+      });
+      return;
+    }
+
+    _setSpeakingState(SPEAKING_STATE.PROCESSING);
     groqHistory.current.push({ role: 'user', content: candidateText });
 
     groqAbort.current?.abort();
@@ -279,6 +310,9 @@ export default function useVoiceInterviewer({
 
     groqHistory.current.push({ role: 'assistant', content: aiText });
     _addTranscriptEntry({ speaker: 'AI', text: aiText });
+
+    // Count this as a follow-up — increment so next response is capped
+    followUpCountRef.current += 1;
 
     // Temporarily pause mic input while AI speaks follow-up to prevent speaker echo / feedback
     isDeliveringQuestionRef.current = true;
@@ -442,11 +476,12 @@ export default function useVoiceInterviewer({
           setInterimText(currentInterim);
         }
 
-        // Set debounce timer: candidate pauses for 2.2 seconds after speaking, submit turn
+        // Set debounce timer: candidate pauses for 4 seconds after speaking, submit turn.
+        // 4s gives users time to pause mid-thought without prematurely cutting them off.
         if (speechDebounceTimer.current) clearTimeout(speechDebounceTimer.current);
         speechDebounceTimer.current = setTimeout(async () => {
           await _finalizeUtterance();
-        }, 2200);
+        }, 4000);
       };
 
       rec.onerror = (e) => {
@@ -644,6 +679,8 @@ export default function useVoiceInterviewer({
    */
   const askQuestion = useCallback(async (questionText, onFinished) => {
     if (!questionText?.trim() || !isMounted.current) return;
+    // Reset follow-up counter whenever a new main question is asked
+    followUpCountRef.current = 0;
     isDeliveringQuestionRef.current = true;
     _stopSpeechRec();
     _addTranscriptEntry({ speaker: 'AI', text: questionText });

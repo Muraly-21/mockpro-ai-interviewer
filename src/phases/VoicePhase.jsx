@@ -210,7 +210,8 @@ Interview Guidelines:
 1. Speak in clear, professional sentences without markdown, asterisks, or code blocks.
 2. Keep responses concise (under 25 words).
 3. If this is a behavioral question, assess for the STAR method (Situation, Task, Action, Result).
-4. For technical questions, evaluate architectural clarity and trade-offs.`;
+4. For technical questions, evaluate architectural clarity and trade-offs.
+5. IMPORTANT: You may ask AT MOST ONE follow-up question per main question. Once you have asked your single follow-up and the candidate has responded, give a brief acknowledgment (e.g. "Great, thank you." or "Got it, noted.") and stop. The interviewer will advance to the next question — do NOT continue asking more follow-ups.`;
 
   const {
     engine, speakingState, isInitialising, isMicOn, isTTSOn,
