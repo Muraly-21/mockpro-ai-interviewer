@@ -194,6 +194,8 @@ export default function VoicePhase() {
 
   const transcriptRef = useRef(null);
   const levelTimerRef = useRef(null);
+  // Ref to hold nextQuestion to avoid circular dependency with the hook
+  const nextQuestionRef = useRef(null);
 
   // Generate 12 standard interview questions dynamically
   const questions = useMemo(() => generateHRQuestions(candidateData), [candidateData]);
@@ -211,7 +213,7 @@ Interview Guidelines:
 2. Keep responses concise (under 25 words).
 3. If this is a behavioral question, assess for the STAR method (Situation, Task, Action, Result).
 4. For technical questions, evaluate architectural clarity and trade-offs.
-5. IMPORTANT: You may ask AT MOST ONE follow-up question per main question. Once you have asked your single follow-up and the candidate has responded, give a brief acknowledgment (e.g. "Great, thank you." or "Got it, noted.") and stop. The interviewer will advance to the next question — do NOT continue asking more follow-ups.`;
+5. FOLLOW-UP STRATEGY: Ask a follow-up question (ending with '?') ONLY when the candidate's answer genuinely needs more depth on this specific topic. If the answer is sufficiently complete, respond with a brief plain acknowledgment (no question mark) such as "Got it, thank you." or "Appreciated, noted." to signal you are done with this question.`;
 
   const {
     engine, speakingState, isInitialising, isMicOn, isTTSOn,
@@ -224,6 +226,10 @@ Interview Guidelines:
       setSilenceSeconds(0);
       setSilenceAlertBanner(null);
       silencePromptCountRef.current = 0;
+    },
+    // Auto-advance to next question when the AI closes a follow-up cycle
+    onQuestionComplete: () => {
+      nextQuestionRef.current?.();
     },
     onError: (msg) => console.warn('[HRPhase] Voice error:', msg),
   });
@@ -308,6 +314,11 @@ Interview Guidelines:
       setSessionDone(true);
     }
   }, [questionIdx, questions, askQuestion]);
+
+  // Keep ref in sync so the hook's onQuestionComplete always calls the latest version
+  useEffect(() => {
+    nextQuestionRef.current = nextQuestion;
+  }, [nextQuestion]);
 
   // ── Replay current question ─────────────────────────────────────────────
   const replayQuestion = useCallback(async () => {

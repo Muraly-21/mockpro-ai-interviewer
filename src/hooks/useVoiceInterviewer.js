@@ -50,8 +50,9 @@ Rules:
 1. Speak ONLY in plain sentences. No markdown, bullets, asterisks, code blocks, or lists.
 2. Keep every response to 15–25 words maximum. Be punchy and direct.
 3. Be encouraging but rigorous.
-4. CRITICAL - Follow-up limit: You may ask AT MOST ONE follow-up question per main interview question. After that single follow-up has been answered, you MUST respond with a brief acknowledgment (e.g. "Great, thanks for that." or "Got it, appreciate the detail.") and then STOP asking questions for this topic. Do NOT ask a second or third follow-up — it creates an infinite loop. The human interviewer will move to the next question manually.
-5. If you have already asked a follow-up and the candidate has responded, NEVER ask another follow-up on the same topic. Simply acknowledge and go silent.`;
+4. FOLLOW-UP STRATEGY: Ask a follow-up question (ending with '?') ONLY when the candidate's answer genuinely needs more depth or clarification on this specific topic. If the answer is sufficiently complete, respond with a brief plain acknowledgment (NO question mark) such as "Got it, thank you." or "Appreciated, that's very clear." — this signals you are done with this topic.
+5. CRITICAL: Do NOT ask the same follow-up repeatedly. Each follow-up must dig into a new specific angle. If you have probed enough (typically 1–3 follow-ups), close with a plain acknowledgment and stop. Never loop.
+6. Safety rule: If you are instructed that the follow-up limit is reached, ALWAYS respond with a plain closing acknowledgment — never a question.`;
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,7 @@ export default function useVoiceInterviewer({
   systemPrompt = '',
   onTranscript,
   onError,
+  onQuestionComplete,
   disableAutoLLM = false,
 } = {}) {
   const { appendTranscript } = useInterview();
@@ -101,8 +103,12 @@ export default function useVoiceInterviewer({
   const startSpeechRecRef   = useRef(null);
   // Track how many follow-ups the AI has asked per main question
   // Reset to 0 each time askQuestion() is called for a new main question
+  // Safety ceiling: max follow-ups per question before force-closing
+  const FOLLOW_UP_SAFETY_MAX = 5;
   const followUpCountRef    = useRef(0);
   const aiSpeakStartRef     = useRef(0);
+  // Ref to hold the latest onQuestionComplete callback (avoids stale closures)
+  const onQuestionCompleteRef = useRef(onQuestionComplete);
 
   // Build system history once (ref so it survives re-renders without adding deps)
   const groqHistory = useRef([
@@ -110,6 +116,11 @@ export default function useVoiceInterviewer({
   ]);
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
+
+  // Keep onQuestionCompleteRef always pointing to the latest callback
+  useEffect(() => {
+    onQuestionCompleteRef.current = onQuestionComplete;
+  }, [onQuestionComplete]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -247,35 +258,43 @@ export default function useVoiceInterviewer({
 
   // ── Groq LLM Turn ──────────────────────────────────────────────────────────
 
+  /**
+   * Helper: speak an acknowledgment, stop mic, then call onQuestionComplete to auto-advance.
+   */
+  const _closeQuestionAndAdvance = useCallback(async (ackText) => {
+    groqHistory.current.push({ role: 'assistant', content: ackText });
+    _addTranscriptEntry({ speaker: 'AI', text: ackText });
+    isDeliveringQuestionRef.current = true;
+    _stopSpeechRec();
+    _setSpeakingState(SPEAKING_STATE.PROCESSING);
+    await speak(ackText, () => {
+      isDeliveringQuestionRef.current = false;
+      _setSpeakingState(SPEAKING_STATE.IDLE);
+      // Trigger auto-advance to next question
+      if (isMounted.current) {
+        console.info('[useVoiceInterviewer] Question cycle complete — auto-advancing.');
+        onQuestionCompleteRef.current?.();
+      }
+    });
+  }, [speak]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const processGroqTurn = useCallback(async (candidateText) => {
     if (!candidateText?.trim() || !isMounted.current) return;
 
     _addTranscriptEntry({ speaker: 'Candidate', text: candidateText });
 
-    // If the AI has already asked its one allowed follow-up for this question,
-    // just acknowledge the candidate's answer and stop — no more follow-ups.
-    if (followUpCountRef.current >= 1) {
-      const closingAcks = [
-        "Got it, thank you for elaborating.",
-        "Appreciate the detail, noted.",
-        "Thanks, that's helpful context.",
-        "Good insight, thanks for sharing.",
-        "Understood, thank you.",
+    // Safety ceiling: if we've hit the maximum follow-ups, force-close and advance
+    if (followUpCountRef.current >= FOLLOW_UP_SAFETY_MAX) {
+      const safetyAcks = [
+        "Got it, thank you for the thorough explanation.",
+        "Appreciate the detail, very helpful.",
+        "Thanks, that covers it well.",
+        "Good insight, thank you.",
+        "Understood, thanks for walking me through that.",
       ];
-      const ack = closingAcks[Math.floor(Math.random() * closingAcks.length)];
+      const ack = safetyAcks[Math.floor(Math.random() * safetyAcks.length)];
       groqHistory.current.push({ role: 'user', content: candidateText });
-      groqHistory.current.push({ role: 'assistant', content: ack });
-      _addTranscriptEntry({ speaker: 'AI', text: ack });
-      isDeliveringQuestionRef.current = true;
-      _stopSpeechRec();
-      _setSpeakingState(SPEAKING_STATE.PROCESSING);
-      await speak(ack, () => {
-        isDeliveringQuestionRef.current = false;
-        _setSpeakingState(SPEAKING_STATE.IDLE);
-        if (isMounted.current && isMicOnRef.current) {
-          startSpeechRecRef.current?.();
-        }
-      });
+      await _closeQuestionAndAdvance(ack);
       return;
     }
 
@@ -311,19 +330,28 @@ export default function useVoiceInterviewer({
     groqHistory.current.push({ role: 'assistant', content: aiText });
     _addTranscriptEntry({ speaker: 'AI', text: aiText });
 
-    // Count this as a follow-up — increment so next response is capped
-    followUpCountRef.current += 1;
+    // Determine intent: if the AI's response contains a question mark, it is a follow-up question.
+    // Otherwise it is a closing acknowledgment — auto-advance to the next main question.
+    const isFollowUpQuestion = aiText.includes('?');
 
-    // Temporarily pause mic input while AI speaks follow-up to prevent speaker echo / feedback
-    isDeliveringQuestionRef.current = true;
-    _stopSpeechRec();
-    await speak(aiText, () => {
-      isDeliveringQuestionRef.current = false;
-      if (isMounted.current && isMicOnRef.current) {
-        startSpeechRecRef.current?.();
-      }
-    });
-  }, [speak]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (isFollowUpQuestion) {
+      // AI wants to dig deeper — count it and keep the mic open
+      followUpCountRef.current += 1;
+      console.info(`[useVoiceInterviewer] Follow-up #${followUpCountRef.current} asked.`);
+      isDeliveringQuestionRef.current = true;
+      _stopSpeechRec();
+      await speak(aiText, () => {
+        isDeliveringQuestionRef.current = false;
+        if (isMounted.current && isMicOnRef.current) {
+          startSpeechRecRef.current?.();
+        }
+      });
+    } else {
+      // AI gave a plain acknowledgment — question cycle is done, auto-advance
+      console.info('[useVoiceInterviewer] AI closed question with acknowledgment — advancing.');
+      await _closeQuestionAndAdvance(aiText);
+    }
+  }, [speak, _closeQuestionAndAdvance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Utterance Finalizer ─────────────────────────────────────────────────────
 
